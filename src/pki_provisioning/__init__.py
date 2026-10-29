@@ -1,26 +1,67 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+# PKI
+PKI and Provisioning are two important concepts in IT, cybersecurity, networking, and device management.
 
-[project]
-name = "pki-provisioning"
-version = "0.1.0"
-description = "Starter project for PKI and provisioning workflows"
-readme = "README.md"
-requires-python = ">=3.10"
-authors = [{ name = "Anotherone-stack" }]
-license = { text = "Apache-2.0" }
-dependencies = [
-    "cryptography>=42.0.0",
-    "fastapi>=0.111.0",
-    "uvicorn>=0.30.0",
-]
+## Current status
 
-[project.scripts]
-pki-provisioning = "pki_provisioning.cli:main"
+This project now includes:
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+- real X.509 certificate issuance with `cryptography`
+- a lightweight FastAPI service for certificate operations
+- a file-backed JSON store for devices and issued certificates
+- CLI access for registration and issuance flows
+- certificate revocation and renewal support
+- audit logging for operational activity
 
-[tool.setuptools.packages.find]
-where = ["src"]
+## API endpoints
+
+- `GET /health`
+- `GET /api/health`
+- `POST /api/devices`
+- `POST /api/certificates`
+- `GET /api/certificates/{device_id}`
+- `GET /api/certificates/{device_id}/validity`
+- `POST /api/certificates/{device_id}/revoke`
+- `POST /api/certificates/{device_id}/renew`
+- `GET /api/certificates`
+- `GET /api/audit`
+- `GET /api/status`
+
+## Example payloads
+
+Register a device:
+
+```json
+{
+  "device_id": "device-001",
+  "common_name": "device-001.internal",
+  "organization": "ExampleOrg",
+  "environment": "production"
+}
+```
+
+Issue a certificate:
+
+```json
+{
+  "device_id": "device-001",
+  "subject": "CN=device-001.internal,O=ExampleOrg",
+  "validity_days": 365,
+  "key_size": 2048
+}
+```
+
+Revoke a certificate:
+
+```json
+{
+  "reason": "rotation"
+}
+```
+
+## Data persistence
+
+The repository currently uses a simple file-backed JSON store at `pki_store.json` to retain device registrations, issued certificates, revocation information, and audit entries across process restarts. This keeps the system operational without prematurely introducing a database layer.
+
+## Next planned step
+
+The next evolution is to add richer lifecycle events and then upgrade the storage layer to a database-backed provisioning workflow when operational needs justify it.

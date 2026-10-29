@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import List
 
 
@@ -33,6 +33,8 @@ class CertificateRecord:
     fingerprint: str = ""
     private_key_pem: str = ""
     certificate_pem: str = ""
+    revoked_at: datetime | None = None
+    revoked_reason: str = ""
 
     def is_active(self, current_time: datetime | None = None) -> bool:
         current = current_time or datetime.now(timezone.utc)

@@ -1,99 +1,121 @@
-from __future__ import annotations
+from fastapi.testclient import TestClient
 
-import argparse
-import json
-from pathlib import Path
+from app import app
 
-from .certificate_manager import CertificateManager
-from .models import CertificateTemplate, DeviceIdentity
+client = TestClient(app)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PKI and provisioning starter CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def test_root_and_health():
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
 
-    register = subparsers.add_parser("register-device", help="register a device identity")
-    register.add_argument("--device-id", required=True)
-    register.add_argument("--common-name", required=True)
-    register.add_argument("--organization", required=True)
-    register.add_argument("--environment", default="production")
-
-    issue = subparsers.add_parser("issue-certificate", help="issue a real X.509 certificate")
-    issue.add_argument("--device-id", required=True)
-    issue.add_argument("--subject", required=True)
-    issue.add_argument("--days", type=int, default=365)
-    issue.add_argument("--key-size", type=int, default=2048)
-    issue.add_argument("--output-certificate", default=None)
-    issue.add_argument("--output-private-key", default=None)
-
-    status = subparsers.add_parser("status", help="show certificate status")
-    status.add_argument("--device-id", required=True)
-
-    return parser
+    root = client.get("/")
+    assert root.status_code == 200
+    assert root.json()["message"] == "PKI Provisioning API"
 
 
-def main() -> None:
-    manager = CertificateManager(storage_path="pki_store.json")
-    parser = build_parser()
-    args = parser.parse_args()
+def test_register_device_and_issue_certificate():
+    device = client.post(
+        "/api/devices",
+        json={
+            "device_id": "device-100",
+            "common_name": "device-100.internal",
+            "organization": "ExampleOrg",
+            "environment": "production",
+        },
+    )
+    assert device.status_code == 200
 
-    if args.command == "register-device":
-        device = manager.register_device(
-            DeviceIdentity(
-                device_id=args.device_id,
-                common_name=args.common_name,
-                organization=args.organization,
-                environment=args.environment,
-            )
-        )
-        print(json.dumps({"device": device.__dict__}, indent=2))
-        return
-
-    if args.command == "issue-certificate":
-        if args.device_id not in manager._devices:
-            raise ValueError(f"Unknown device: {args.device_id}. Register it first.")
-
-        cert = manager.create_certificate(
-            args.device_id,
-            CertificateTemplate(
-                subject=args.subject,
-                validity_days=args.days,
-                key_size=args.key_size,
-            ),
-        )
-
-        if args.output_certificate:
-            Path(args.output_certificate).write_text(cert.certificate_pem, encoding="utf-8")
-        if args.output_private_key:
-            Path(args.output_private_key).write_text(cert.private_key_pem, encoding="utf-8")
-
-        print(json.dumps({
-            "device_id": cert.device_id,
-            "serial_number": cert.serial_number,
-            "subject": cert.subject,
-            "issued_at": cert.issued_at.isoformat(),
-            "expires_at": cert.expires_at.isoformat(),
-            "status": cert.status,
-            "fingerprint": cert.fingerprint,
-            "certificate_file": args.output_certificate,
-            "private_key_file": args.output_private_key,
-        }, indent=2))
-        return
-
-    if args.command == "status":
-        record = manager.get_certificate(args.device_id)
-        if record is None:
-            print(json.dumps({"device_id": args.device_id, "status": "not_found"}, indent=2))
-            return
-
-        print(json.dumps({
-            "device_id": record.device_id,
-            "status": record.status,
-            "subject": record.subject,
-            "expires_at": record.expires_at.isoformat(),
-            "valid": record.is_active(),
-        }, indent=2))
+    cert = client.post(
+        "/api/certificates",
+        json={
+            "device_id": "device-100",
+            "subject": "CN=device-100.internal,O=ExampleOrg",
+            "validity_days": 30,
+            "key_size": 2048,
+        },
+    )
+    assert cert.status_code == 200
+    body = cert.json()
+    assert body["device_id"] == "device-100"
+    assert body["certificate"].startswith("-----BEGIN CERTIFICATE-----")
 
 
-if __name__ == "__main__":
-    main()
+def test_certificate_validity_and_listing():
+    device = client.post(
+        "/api/devices",
+        json={
+            "device_id": "device-101",
+            "common_name": "device-101.internal",
+            "organization": "ExampleOrg",
+        },
+    )
+    assert device.status_code == 200
+
+    client.post(
+        "/api/certificates",
+        json={
+            "device_id": "device-101",
+            "subject": "CN=device-101.internal,O=ExampleOrg",
+            "validity_days": 365,
+        },
+    )
+
+    valid = client.get("/api/certificates/device-101/validity")
+    assert valid.status_code == 200
+    assert valid.json()["valid"] is True
+
+    listed = client.get("/api/certificates")
+    assert listed.status_code == 200
+    assert listed.json()["count"] >= 1
+
+
+def test_status_and_audit_endpoints():
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    assert status.json()["service"] == "pki-provisioning"
+    assert status.json()["store"] == "file-backed"
+
+    audit = client.get("/api/audit")
+    assert audit.status_code == 200
+    assert audit.json()["count"] >= 0
+
+
+def test_revocation_and_renewal_api_flow():
+    client.post(
+        "/api/devices",
+        json={
+            "device_id": "device-102",
+            "common_name": "device-102.internal",
+            "organization": "ExampleOrg",
+        },
+    )
+
+    issued = client.post(
+        "/api/certificates",
+        json={
+            "device_id": "device-102",
+            "subject": "CN=device-102.internal,O=ExampleOrg",
+            "validity_days": 30,
+        },
+    )
+    assert issued.status_code == 200
+
+    revoked = client.post(
+        "/api/certificates/device-102/revoke",
+        json={"reason": "rotation"},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+
+    renewed = client.post(
+        "/api/certificates/device-102/renew",
+        json={
+            "subject": "CN=device-102.internal,O=ExampleOrg",
+            "validity_days": 90,
+            "key_size": 2048,
+        },
+    )
+    assert renewed.status_code == 200
+    assert renewed.json()["status"] == "issued"
