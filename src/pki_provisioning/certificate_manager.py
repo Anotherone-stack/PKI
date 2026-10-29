@@ -1,37 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import List
+import json
+from pathlib import Path
+from typing import Any
 
 
-@dataclass(frozen=True)
-class DeviceIdentity:
-    device_id: str
-    common_name: str
-    organization: str
-    environment: str = "production"
+class FileStore:
+    def __init__(self, path: str | Path = "pki_store.json") -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
 
+    def load(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"devices": {}, "certificates": {}}
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"devices": {}, "certificates": {}}
 
-@dataclass
-class CertificateTemplate:
-    subject: str
-    validity_days: int = 365
-    key_size: int = 2048
-    san_dns: List[str] = field(default_factory=list)
-    san_ip: List[str] = field(default_factory=list)
-
-
-@dataclass
-class CertificateRecord:
-    device_id: str
-    serial_number: str
-    subject: str
-    issued_at: datetime
-    expires_at: datetime
-    status: str = "issued"
-    fingerprint: str = ""
-
-    def is_active(self, current_time: datetime | None = None) -> bool:
-        current = current_time or datetime.utcnow()
-        return self.status == "issued" and current < self.expires_at
+    def save(self, state: dict[str, Any]) -> None:
+        self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")

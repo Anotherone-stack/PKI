@@ -1,77 +1,78 @@
-from fastapi.testclient import TestClient
+from datetime import datetime, timedelta
 
-from app import app
+from cryptography import x509
 
-client = TestClient(app)
-
-
-def test_root_and_health():
-    health = client.get("/health")
-    assert health.status_code == 200
-    assert health.json()["status"] == "ok"
-
-    root = client.get("/")
-    assert root.status_code == 200
-    assert root.json()["message"] == "PKI Provisioning API"
+from pki_provisioning.certificate_manager import CertificateManager
+from pki_provisioning.models import CertificateTemplate, DeviceIdentity
 
 
-def test_register_device_and_issue_certificate():
-    device = client.post(
-        "/api/devices",
-        json={
-            "device_id": "device-100",
-            "common_name": "device-100.internal",
-            "organization": "ExampleOrg",
-            "environment": "production",
-        },
-    )
-    assert device.status_code == 200
+def test_register_and_issue_certificate():
+    manager = CertificateManager(storage_path=".tmp-test-store.json")
 
-    cert = client.post(
-        "/api/certificates",
-        json={
-            "device_id": "device-100",
-            "subject": "CN=device-100.internal,O=ExampleOrg",
-            "validity_days": 30,
-            "key_size": 2048,
-        },
-    )
-    assert cert.status_code == 200
-    body = cert.json()
-    assert body["device_id"] == "device-100"
-    assert body["certificate"].startswith("-----BEGIN CERTIFICATE-----")
-
-
-def test_certificate_validity_and_listing():
-    device = client.post(
-        "/api/devices",
-        json={
-            "device_id": "device-101",
-            "common_name": "device-101.internal",
-            "organization": "ExampleOrg",
-        },
-    )
-    assert device.status_code == 200
-
-    client.post(
-        "/api/certificates",
-        json={
-            "device_id": "device-101",
-            "subject": "CN=device-101.internal,O=ExampleOrg",
-            "validity_days": 365,
-        },
+    manager.register_device(
+        DeviceIdentity(
+            device_id="device-001",
+            common_name="device-001.internal",
+            organization="ExampleOrg",
+            environment="production",
+        )
     )
 
-    valid = client.get("/api/certificates/device-101/validity")
-    assert valid.status_code == 200
-    assert valid.json()["valid"] is True
+    cert = manager.create_certificate(
+        "device-001",
+        CertificateTemplate(subject="CN=device-001.internal,O=ExampleOrg", validity_days=90),
+    )
 
-    listed = client.get("/api/certificates")
-    assert listed.status_code == 200
-    assert listed.json()["count"] >= 1
+    assert cert.device_id == "device-001"
+    assert cert.status == "issued"
+    assert cert.expires_at > cert.issued_at
+    assert cert.private_key_pem.startswith("-----BEGIN RSA PRIVATE KEY-----")
+    assert cert.certificate_pem.startswith("-----BEGIN CERTIFICATE-----")
+    assert manager.is_certificate_valid("device-001") is True
+
+    loaded = x509.load_pem_x509_certificate(cert.certificate_pem.encode("utf-8"))
+    assert loaded.subject.rfc4514_string() == "CN=device-001.internal,O=ExampleOrg"
 
 
-def test_status_endpoint():
-    status = client.get("/api/status")
-    assert status.status_code == 200
-    assert status.json()["service"] == "pki-provisioning"
+def test_certificate_expiry_check():
+    manager = CertificateManager(storage_path=".tmp-test-store.json")
+    manager.register_device(
+        DeviceIdentity(
+            device_id="device-002",
+            common_name="device-002.internal",
+            organization="ExampleOrg",
+        )
+    )
+
+    cert = manager.create_certificate(
+        "device-002",
+        CertificateTemplate(subject="CN=device-002.internal,O=ExampleOrg", validity_days=1),
+    )
+
+    expired_time = cert.expires_at + timedelta(days=1)
+    assert manager.is_certificate_valid("device-002", current_time=expired_time) is False
+
+
+def test_unknown_device_raises_error():
+    manager = CertificateManager(storage_path=".tmp-test-store.json")
+
+    try:
+        manager.create_certificate("missing-device", CertificateTemplate(subject="CN=missing"))
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_file_persistence_across_instances(tmp_path):
+    store_path = tmp_path / "pki_store.json"
+
+    first = CertificateManager(storage_path=store_path)
+    first.register_device(
+        DeviceIdentity(device_id="device-003", common_name="device-003.internal", organization="ExampleOrg")
+    )
+    first.create_certificate("device-003", CertificateTemplate(subject="CN=device-003.internal,O=ExampleOrg", validity_days=7))
+
+    second = CertificateManager(storage_path=store_path)
+    assert second.get_device("device-003") is not None
+    assert second.get_certificate("device-003") is not None
+    assert second.is_certificate_valid("device-003") is True

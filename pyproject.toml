@@ -1,26 +1,18 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+from __future__ import annotations
 
-[project]
-name = "pki-provisioning"
-version = "0.1.0"
-description = "Starter project for PKI and provisioning workflows"
-readme = "README.md"
-requires-python = ">=3.10"
-authors = [{ name = "Anotherone-stack" }]
-license = { text = "Apache-2.0" }
-dependencies = [
-    "cryptography>=42.0.0",
-    "fastapi>=0.111.0",
-    "uvicorn>=0.30.0",
-]
+from fastapi import FastAPI
 
-[project.scripts]
-pki-provisioning = "pki_provisioning.cli:main"
+from pki_provisioning.api import app as pki_app
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+app = FastAPI(title="PKI Provisioning Service", version="0.1.0")
+app.mount("/api", pki_app)
 
-[tool.setuptools.packages.find]
-where = ["src"]
+
+@app.get("/")
+def root() -> dict[str, str]:
+    return {"message": "PKI Provisioning API"}
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "pki-provisioning"}

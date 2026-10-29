@@ -1,99 +1,115 @@
 from __future__ import annotations
 
-import argparse
-import json
-from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
-from .certificate_manager import CertificateManager
-from .models import CertificateTemplate, DeviceIdentity
+from pki_provisioning.certificate_manager import CertificateManager
+from pki_provisioning.models import CertificateTemplate, DeviceIdentity
 
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PKI and provisioning starter CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    register = subparsers.add_parser("register-device", help="register a device identity")
-    register.add_argument("--device-id", required=True)
-    register.add_argument("--common-name", required=True)
-    register.add_argument("--organization", required=True)
-    register.add_argument("--environment", default="production")
-
-    issue = subparsers.add_parser("issue-certificate", help="issue a real X.509 certificate")
-    issue.add_argument("--device-id", required=True)
-    issue.add_argument("--subject", required=True)
-    issue.add_argument("--days", type=int, default=365)
-    issue.add_argument("--key-size", type=int, default=2048)
-    issue.add_argument("--output-certificate", default=None)
-    issue.add_argument("--output-private-key", default=None)
-
-    status = subparsers.add_parser("status", help="show certificate status")
-    status.add_argument("--device-id", required=True)
-
-    return parser
+manager = CertificateManager(storage_path="pki_store.json")
 
 
-def main() -> None:
-    manager = CertificateManager()
-    parser = build_parser()
-    args = parser.parse_args()
+class DeviceRegisterRequest(BaseModel):
+    device_id: str = Field(..., min_length=1)
+    common_name: str = Field(..., min_length=1)
+    organization: str = Field(..., min_length=1)
+    environment: str = Field(default="production")
 
-    if args.command == "register-device":
-        device = manager.register_device(
-            DeviceIdentity(
-                device_id=args.device_id,
-                common_name=args.common_name,
-                organization=args.organization,
-                environment=args.environment,
-            )
+
+class IssueCertificateRequest(BaseModel):
+    device_id: str = Field(..., min_length=1)
+    subject: str = Field(..., min_length=1)
+    validity_days: int = Field(default=365, gt=0)
+    key_size: int = Field(default=2048, ge=2048, le=4096)
+
+
+app = FastAPI(title="PKI Provisioning API", version="0.1.0")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "pki-provisioning"}
+
+
+@app.post("/devices")
+def register_device(payload: DeviceRegisterRequest) -> dict:
+    device = manager.register_device(
+        DeviceIdentity(
+            device_id=payload.device_id,
+            common_name=payload.common_name,
+            organization=payload.organization,
+            environment=payload.environment,
         )
-        print(json.dumps({"device": device.__dict__}, indent=2))
-        return
-
-    if args.command == "issue-certificate":
-        if args.device_id not in manager._devices:
-            raise ValueError(f"Unknown device: {args.device_id}. Register it first.")
-
-        cert = manager.create_certificate(
-            args.device_id,
-            CertificateTemplate(
-                subject=args.subject,
-                validity_days=args.days,
-                key_size=args.key_size,
-            ),
-        )
-
-        if args.output_certificate:
-            Path(args.output_certificate).write_text(cert.certificate_pem, encoding="utf-8")
-        if args.output_private_key:
-            Path(args.output_private_key).write_text(cert.private_key_pem, encoding="utf-8")
-
-        print(json.dumps({
-            "device_id": cert.device_id,
-            "serial_number": cert.serial_number,
-            "subject": cert.subject,
-            "issued_at": cert.issued_at.isoformat(),
-            "expires_at": cert.expires_at.isoformat(),
-            "status": cert.status,
-            "fingerprint": cert.fingerprint,
-            "certificate_file": args.output_certificate,
-            "private_key_file": args.output_private_key,
-        }, indent=2))
-        return
-
-    if args.command == "status":
-        record = manager.get_certificate(args.device_id)
-        if record is None:
-            print(json.dumps({"device_id": args.device_id, "status": "not_found"}, indent=2))
-            return
-
-        print(json.dumps({
-            "device_id": record.device_id,
-            "status": record.status,
-            "subject": record.subject,
-            "expires_at": record.expires_at.isoformat(),
-            "valid": record.is_active(),
-        }, indent=2))
+    )
+    return {"device": device.__dict__}
 
 
-if __name__ == "__main__":
-    main()
+@app.post("/certificates")
+def issue_certificate(payload: IssueCertificateRequest) -> dict:
+    if payload.device_id not in manager._devices:
+        raise HTTPException(status_code=404, detail=f"Unknown device: {payload.device_id}")
+
+    cert = manager.create_certificate(
+        payload.device_id,
+        CertificateTemplate(
+            subject=payload.subject,
+            validity_days=payload.validity_days,
+            key_size=payload.key_size,
+        ),
+    )
+
+    return {
+        "device_id": cert.device_id,
+        "subject": cert.subject,
+        "serial_number": cert.serial_number,
+        "issued_at": cert.issued_at.isoformat(),
+        "expires_at": cert.expires_at.isoformat(),
+        "status": cert.status,
+        "fingerprint": cert.fingerprint,
+        "certificate": cert.certificate_pem,
+        "private_key": cert.private_key_pem,
+    }
+
+
+@app.get("/certificates/{device_id}/validity")
+def check_validity(device_id: str) -> dict:
+    cert = manager.get_certificate(device_id)
+    if cert is None:
+        raise HTTPException(status_code=404, detail=f"No certificate found for device: {device_id}")
+
+    return {
+        "device_id": device_id,
+        "valid": cert.is_active(),
+        "status": cert.status,
+        "expires_at": cert.expires_at.isoformat(),
+    }
+
+
+@app.get("/certificates")
+def list_certificates() -> dict:
+    certs = manager.list_certificates()
+    return {
+        "count": len(certs),
+        "certificates": [
+            {
+                "device_id": cert.device_id,
+                "serial_number": cert.serial_number,
+                "subject": cert.subject,
+                "issued_at": cert.issued_at.isoformat(),
+                "expires_at": cert.expires_at.isoformat(),
+                "status": cert.status,
+                "valid": cert.is_active(),
+            }
+            for cert in certs
+        ],
+    }
+
+
+@app.get("/status")
+def status() -> dict:
+    return {
+        "service": "pki-provisioning",
+        "devices_registered": len(manager._devices),
+        "certificates_issued": len(manager._certificates),
+        "store": "file-backed",
+    }
