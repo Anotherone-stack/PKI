@@ -1,0 +1,58 @@
+from datetime import datetime, timedelta, timezone
+
+from pki_provisioning.certificate_manager import CertificateManager
+from pki_provisioning.models import CertificateTemplate, DeviceIdentity
+
+
+def test_register_and_issue_certificate():
+    manager = CertificateManager()
+
+    device = manager.register_device(
+        DeviceIdentity(
+            device_id="device-001",
+            common_name="device-001.internal",
+            organization="ExampleOrg",
+            environment="production",
+        )
+    )
+
+    assert device.device_id == "device-001"
+
+    cert = manager.create_certificate(
+        "device-001",
+        CertificateTemplate(subject="CN=device-001.internal,O=ExampleOrg", validity_days=90),
+    )
+
+    assert cert.device_id == "device-001"
+    assert cert.status == "issued"
+    assert cert.expires_at > cert.issued_at
+    assert manager.is_certificate_valid("device-001") is True
+
+
+def test_certificate_expiry_check():
+    manager = CertificateManager()
+    manager.register_device(
+        DeviceIdentity(
+            device_id="device-002",
+            common_name="device-002.internal",
+            organization="ExampleOrg",
+        )
+    )
+
+    cert = manager.create_certificate(
+        "device-002",
+        CertificateTemplate(subject="CN=device-002.internal,O=ExampleOrg", validity_days=1),
+    )
+
+    expired_time = cert.expires_at + timedelta(days=1)
+    assert manager.is_certificate_valid("device-002", current_time=expired_time) is False
+
+
+def test_unknown_device_raises_error():
+    manager = CertificateManager()
+
+    try:
+        manager.create_certificate("missing-device", CertificateTemplate(subject="CN=missing"))
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
