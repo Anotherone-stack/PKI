@@ -1,4 +1,7 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from pki_provisioning.certificate_manager import CertificateManager
 from pki_provisioning.models import CertificateTemplate, DeviceIdentity
@@ -7,7 +10,7 @@ from pki_provisioning.models import CertificateTemplate, DeviceIdentity
 def test_register_and_issue_certificate():
     manager = CertificateManager()
 
-    device = manager.register_device(
+    manager.register_device(
         DeviceIdentity(
             device_id="device-001",
             common_name="device-001.internal",
@@ -15,8 +18,6 @@ def test_register_and_issue_certificate():
             environment="production",
         )
     )
-
-    assert device.device_id == "device-001"
 
     cert = manager.create_certificate(
         "device-001",
@@ -26,7 +27,12 @@ def test_register_and_issue_certificate():
     assert cert.device_id == "device-001"
     assert cert.status == "issued"
     assert cert.expires_at > cert.issued_at
+    assert cert.private_key_pem.startswith("-----BEGIN RSA PRIVATE KEY-----")
+    assert cert.certificate_pem.startswith("-----BEGIN CERTIFICATE-----")
     assert manager.is_certificate_valid("device-001") is True
+
+    loaded = x509.load_pem_x509_certificate(cert.certificate_pem.encode("utf-8"))
+    assert loaded.subject.rfc4514_string() == "CN=device-001.internal,O=ExampleOrg"
 
 
 def test_certificate_expiry_check():
