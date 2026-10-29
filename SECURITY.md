@@ -52,7 +52,7 @@ Examples of security concerns include:
 
 Please submit vulnerability reports through the organization's designated security reporting channel.
 
-**Security Contact:** [security@your-company.com]
+**Security Contact:** [vianeo1@outlook.com]
 
 **Alternative Reporting Method:** [Insert approved security reporting URL]
 
